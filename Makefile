@@ -35,6 +35,7 @@ build:
 	docker build -f $(DOCKERFILE) -t $(IMAGE) .
 
 run:
+	@docker rm -f $(CONTAINER) >/dev/null 2>&1 || true
 	docker run --rm -it --privileged --name $(CONTAINER) $(RUN_ENV) $(IMAGE)
 
 stop:
