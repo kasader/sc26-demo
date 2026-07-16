@@ -1,5 +1,8 @@
-// go:build ignore
+//go:build ignore
 
+// bpf_helper_defs.h (pulled in by bpf_helpers.h) uses __u32/__u64 and expects
+// linux/types.h (or vmlinux.h) to already be included -- must come first.
+#include <linux/types.h>
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
 #include <linux/bpf.h>
@@ -53,6 +56,8 @@ struct {
   __uint(max_entries, 4);
 } pkt_stats SEC(".maps");
 
+// The single address:port this guard protects, set by userspace via the
+// HTTP /setup endpoint. A single-entry array is just a mutable global.
 struct {
   __uint(type, BPF_MAP_TYPE_ARRAY);
   __type(key, __u32);
@@ -60,6 +65,9 @@ struct {
   __uint(max_entries, 1);
 } target SEC(".maps");
 
+// Sources to drop unconditionally, added either by the rate limiter below or
+// manually via the HTTP /block endpoint. Userspace owns eviction (TTL-based),
+// so entries stay here until it deletes them.
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
   __type(key, struct address_key);
@@ -80,6 +88,9 @@ struct {
   __uint(max_entries, 4096);
 } rate_track SEC(".maps");
 
+// Kernel-to-userspace notification channel: one block_event per source that
+// just tripped the rate limiter, so userspace can add it to `blocklist` with
+// a TTL. The drop itself already happened in-kernel by the time this is read.
 struct {
   __uint(type, BPF_MAP_TYPE_RINGBUF);
   __uint(max_entries, 1 << 16);
@@ -96,6 +107,10 @@ int guard(struct xdp_md *ctx) {
   void *data_end = (void *)(long)ctx->data_end;
   void *data = (void *)(long)ctx->data;
 
+  // Parse down to the UDP header, bailing out to XDP_PASS (let the kernel's
+  // normal stack handle it) for anything that isn't IPv4/UDP or that fails a
+  // bounds check. The verifier requires every pointer dereference below to be
+  // provably within [data, data_end), hence the repeated `> data_end` checks.
   struct ethhdr *eth = data;
   if ((void *)(eth + 1) > data_end)
     return XDP_PASS;
@@ -113,6 +128,9 @@ int guard(struct xdp_md *ctx) {
   if ((void *)(udph + 1) > data_end)
     return XDP_PASS;
 
+  // Only packets addressed to the protected target are in scope for this
+  // guard; everything else (other services on the same host, etc.) passes
+  // through untouched and isn't counted in pkt_stats at all.
   __u32 tkey = 0;
   struct address_key *dst = bpf_map_lookup_elem(&target, &tkey);
   if (!dst || dst->address == 0)
@@ -129,11 +147,21 @@ int guard(struct xdp_md *ctx) {
       .port = bpf_ntohs(udph->source),
   };
 
+  // Blocklist: sources that either tripped the rate limiter before (and
+  // haven't had their TTL expire yet) or were blocked manually via the HTTP
+  // API are dropped immediately, before doing any further work on them.
   if (bpf_map_lookup_elem(&blocklist, &src)) {
     inc_stat(2);
     return XDP_DROP;
   }
 
+  // Rate limiting: track packets/sec per source over a 1-second sliding
+  // window. Exceeding rate_threshold reports a block_event over the ring
+  // buffer (so userspace adds this source to `blocklist` with a TTL) and
+  // drops the packet that tripped it. This alone stops a naive flood from a
+  // small number of sources, but a source spread wide enough (see
+  // `rate_track`'s comment above) evades it -- that's what the protocol
+  // validation layer below is for.
   __u64 now = bpf_ktime_get_ns();
   struct rate_state *rs = bpf_map_lookup_elem(&rate_track, &src);
   if (!rs) {
