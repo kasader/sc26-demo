@@ -174,25 +174,6 @@ int guard(struct xdp_md *ctx) {
     return XDP_PASS;
   }
 
-  // Not a recognized flag: let a 5-byte "PING\n" healthcheck payload through,
-  // drop everything else.
-  __u16 udp_total_len = bpf_ntohs(udph->len);
-  if (udp_total_len == sizeof(struct udphdr) + 5 &&
-      (void *)(payload + 5) <= data_end) {
-    const char healthcheck[5] = "PING\n";
-    int ok = 1;
-    for (int i = 0; i < 5; i++) {
-      if (payload[i] != healthcheck[i]) {
-        ok = 0;
-        break;
-      }
-    }
-    if (ok) {
-      inc_stat(1);
-      return XDP_PASS;
-    }
-  }
-
   if (is_debug)
     bpf_printk("guard: protocol-drop %x:%d flag=0x%02x", src.address, src.port,
                flag);
