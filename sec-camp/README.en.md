@@ -42,7 +42,7 @@ defense effective while staying entirely at the low layer (XDP).
   │  └───────────────────┘      │  │ (rate limit + proto)  │  │
   │                              │  ▼                       │  │
   │                              │ victim (Go, UDP server)  │  │
-  │                              │ guard (Go, HTTP :5555 +  │  │
+  │                              │ guard (Go, XDP loader +  │  │
   │                              │        live dashboard)   │  │
   │                              └───────────────────────┘  │
   └─────────────────────────────────────────────────────────┘
@@ -81,9 +81,9 @@ On startup it automatically:
 
 1. Creates the `atk`/`vic` network namespaces and the veth pair.
 2. Starts `victim` (the UDP server) inside `vic`.
-3. Starts `guard` (the XDP program) inside `vic`, exposing its HTTP API on `:5555`.
-4. Attaches `guard` to `veth-vic` and configures `10.10.0.2:9999` as the protected target.
-5. Opens (and attaches to) a tmux session `sec-camp` split into three panes:
+3. Starts `guard` (the XDP program) inside `vic`; on startup it attaches itself
+   to `veth-vic` and configures `10.10.0.2:9999` as the protected target.
+4. Opens (and attaches to) a tmux session `sec-camp` split into three panes:
    left = guard's live dashboard, top-right = victim's log, bottom-right = a shell in the attacker namespace.
 
 From the bottom-right pane, run the attack commands and watch the left-hand
@@ -108,21 +108,6 @@ dashboard update live with `total` / `passed` / `dropped-rate` /
 Running a `legit` traffic generator in one pane alongside an attack in
 another is a good way to show that real users survive the attack unaffected.
 
-### Manual controls (for Q&A)
-
-From another shell in the container (`docker exec -it sec-camp bash`):
-
-```bash
-cd /src/sec-camp/scripts
-
-# manually block a specific source
-./vic.sh curl -s -X POST http://10.10.0.2:5555/block \
-  -d '[{"address":"1.2.3.4:5555","duration":"1m"}]'
-
-# clear the entire blocklist
-./vic.sh curl -s -X POST http://10.10.0.2:5555/unblock-all
-```
-
 ## Cleanup
 
 ```bash
@@ -141,7 +126,7 @@ the host.
 | Flag / env var | Default | Meaning |
 | --- | --- | --- |
 | `-rate` / `RATE_THRESHOLD` | 30 | Per-source pps (packets/sec) above which a source is auto-blocked |
-| `-block-ttl` / `BLOCK_TTL` | 15s | How long an auto- or manually-blocked source stays blocked |
+| `-block-ttl` / `BLOCK_TTL` | 15s | How long an auto-blocked source stays blocked |
 
 Example: `docker run --rm -it --privileged -e RATE_THRESHOLD=10 sec-camp-demo`
 

@@ -2,18 +2,14 @@ package main
 
 import (
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"log/slog"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
-	"sync"
 	"time"
 
 	"github.com/cilium/ebpf"
@@ -26,14 +22,20 @@ func main() {
 	var (
 		debugMode bool
 		rate      uint
-		listen    string
+		nic       string
+		target    string
 		blockTTL  time.Duration
 	)
 	flag.BoolVar(&debugMode, "debug", false, "Enable bpf_printk tracing (view via /sys/kernel/debug/tracing/trace_pipe).")
 	flag.UintVar(&rate, "rate", 30, "Per-source packets/sec allowed before auto-block kicks in.")
-	flag.StringVar(&listen, "listen", "0.0.0.0:5555", "HTTP control API address.")
+	flag.StringVar(&nic, "nic", "", "Interface to attach the XDP guard to, e.g. veth-vic.")
+	flag.StringVar(&target, "target", "", "Protected IPv4 host:port to police, e.g. 10.10.0.2:9999.")
 	flag.DurationVar(&blockTTL, "block-ttl", 15*time.Second, "How long an auto-blocked source stays blocked.")
 	flag.Parse()
+
+	if nic == "" || target == "" {
+		log.Fatal("both -nic and -target are required")
+	}
 
 	if err := rlimit.RemoveMemlock(); err != nil {
 		log.Fatal("Removing memlock:", err)
@@ -69,126 +71,37 @@ func main() {
 
 	dash := newDashboard(rate, blockTTL)
 
-	respondJSON := func(w http.ResponseWriter, status int, data any) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		_ = json.NewEncoder(w).Encode(data)
+	// Attach the program to the NIC and tell it which target to police. These
+	// used to be driven at runtime over an HTTP control API; for the booth demo
+	// the target is fixed, so we just do it once at startup from flags.
+	targetAddr, err := net.ResolveUDPAddr("udp", target)
+	if err != nil || targetAddr.IP.To4() == nil {
+		log.Fatalf("-target must be an IPv4 host:port: %v", err)
+	}
+	iface, err := net.InterfaceByName(nic)
+	if err != nil {
+		log.Fatalf("interface %q: %v", nic, err)
 	}
 
-	var attachOnce sync.Once
-	var attachErr error
-	var xdpLink link.Link
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /setup", func(w http.ResponseWriter, r *http.Request) {
-		reqData, err := io.ReadAll(r.Body)
-		if err != nil {
-			respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-		var tmp struct {
-			Address string `json:"address"`
-			NicName string `json:"nic_name"`
-		}
-		if err := json.Unmarshal(reqData, &tmp); err != nil {
-			respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-		targetAddr, err := net.ResolveUDPAddr("udp", tmp.Address)
-		if err != nil || targetAddr.IP.To4() == nil {
-			respondJSON(w, http.StatusBadRequest, map[string]string{"error": "address must be an IPv4 host:port"})
-			return
-		}
-		iface, err := net.InterfaceByName(tmp.NicName)
-		if err != nil {
-			respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-
-		attachOnce.Do(func() {
-			xdpLink, attachErr = link.AttachXDP(link.XDPOptions{
-				Program:   objs.Guard,
-				Interface: iface.Index,
-				Flags:     link.XDPGenericMode, // required: XDP native mode isn't supported on veth
-			})
-		})
-		if attachErr != nil {
-			respondJSON(w, http.StatusInternalServerError, map[string]string{"error": attachErr.Error()})
-			return
-		}
-		_ = xdpLink // kept alive for the process lifetime; closing it would detach the program
-
-		key := guardAddressKey{
-			Address: binary.BigEndian.Uint32(targetAddr.IP.To4()),
-			Port:    uint16(targetAddr.Port),
-		}
-		if err := objs.Target.Update(uint32(0), key, ebpf.UpdateAny); err != nil {
-			respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-		dash.setTarget(tmp.Address, tmp.NicName)
-		slog.Info("attached", "target", tmp.Address, "nic", tmp.NicName)
-		respondJSON(w, http.StatusOK, map[string]string{"status": "attached"})
+	xdpLink, err := link.AttachXDP(link.XDPOptions{
+		Program:   objs.Guard,
+		Interface: iface.Index,
+		Flags:     link.XDPGenericMode, // required: XDP native mode isn't supported on veth
 	})
+	if err != nil {
+		log.Fatal("Attaching XDP:", err)
+	}
+	defer xdpLink.Close()
 
-	mux.HandleFunc("POST /block", func(w http.ResponseWriter, r *http.Request) {
-		reqData, err := io.ReadAll(r.Body)
-		if err != nil {
-			respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-		var items []struct {
-			Address  string `json:"address"`
-			Duration string `json:"duration"`
-		}
-		if err := json.Unmarshal(reqData, &items); err != nil {
-			respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-		var added []string
-		for _, item := range items {
-			addr, err := net.ResolveUDPAddr("udp", item.Address)
-			if err != nil || addr.IP.To4() == nil {
-				continue
-			}
-			d := blockTTL
-			if item.Duration != "" {
-				if parsed, err := time.ParseDuration(item.Duration); err == nil {
-					d = parsed
-				}
-			}
-			key := guardAddressKey{
-				Address: binary.BigEndian.Uint32(addr.IP.To4()),
-				Port:    uint16(addr.Port),
-			}
-			if err := objs.Blocklist.Put(key, uint8(1)); err != nil {
-				continue
-			}
-			dash.block(item.Address, d, "manual")
-			added = append(added, item.Address)
-		}
-		respondJSON(w, http.StatusOK, added)
-	})
-
-	mux.HandleFunc("POST /unblock-all", func(w http.ResponseWriter, r *http.Request) {
-		var key guardAddressKey
-		var toDelete []guardAddressKey
-		iter := objs.Blocklist.Iterate()
-		for iter.Next(&key, new(uint8)) {
-			toDelete = append(toDelete, key)
-		}
-		for _, k := range toDelete {
-			_ = objs.Blocklist.Delete(k)
-		}
-		dash.clear()
-		respondJSON(w, http.StatusOK, map[string]string{"status": "cleared"})
-	})
-
-	go func() {
-		if err := http.ListenAndServe(listen, mux); err != nil {
-			log.Fatal("HTTP server:", err)
-		}
-	}()
+	targetKey := guardAddressKey{
+		Address: binary.BigEndian.Uint32(targetAddr.IP.To4()),
+		Port:    uint16(targetAddr.Port),
+	}
+	if err := objs.Target.Update(uint32(0), targetKey, ebpf.UpdateAny); err != nil {
+		log.Fatal("Setting target:", err)
+	}
+	dash.setTarget(target, nic)
+	slog.Info("attached", "target", target, "nic", nic)
 
 	// Ring buffer consumer: the eBPF program decides in-kernel to drop and
 	// notifies here so the block can be recorded with a TTL. The drop for

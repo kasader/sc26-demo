@@ -1,0 +1,10 @@
+# guard.c is an eBPF/XDP program. It only ever compiles inside the Linux
+# container via bpf2go -> clang, against libbpf and kernel UAPI headers
+# (linux/types.h, bpf/bpf_helpers.h, ...) that do not exist on macOS. The
+# editor's clangd therefore can't resolve them and floods the file with
+# "file not found" / "unknown type __u32" noise that has nothing to do with
+# the code. Silence it here; the authoritative compile happens in the build.
+If:
+  PathMatch: .*\.c
+Diagnostics:
+  Suppress: "*"

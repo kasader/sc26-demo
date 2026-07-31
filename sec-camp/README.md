@@ -41,7 +41,7 @@ DoS/DDoS攻撃に対し、Linuxカーネルの eBPF (XDP) を使って低レイ�
   │  └───────────────────┘      │  │ (rate limit + proto)  │  │
   │                              │  ▼                       │  │
   │                              │ victim (Go, UDP server)  │  │
-  │                              │ guard (Go, HTTP :5555 +  │  │
+  │                              │ guard (Go, XDP loader +  │  │
   │                              │        live dashboard)   │  │
   │                              └───────────────────────┘  │
   └─────────────────────────────────────────────────────────┘
@@ -80,9 +80,9 @@ docker run --rm -it --privileged --name sec-camp sec-camp-demo
 
 1. `atk`/`vic` の network namespace と veth を作成
 2. `victim` (UDPサーバ) を `vic` 側で起動
-3. `guard` (XDPプログラム) を `vic` 側で起動し、HTTP API (`:5555`) を公開
-4. `guard` を `veth-vic` にアタッチし、`10.10.0.2:9999` を保護対象に設定
-5. tmux セッション `sec-camp` を開き、3分割ペイン
+3. `guard` (XDPプログラム) を `vic` 側で起動。起動時に `veth-vic` へ
+   アタッチし、`10.10.0.2:9999` を保護対象に設定する
+4. tmux セッション `sec-camp` を開き、3分割ペイン
    (左: guard のライブダッシュボード / 右上: victim のログ /
    右下: attacker 用のシェル) にアタッチ
 
@@ -108,21 +108,6 @@ docker run --rm -it --privileged --name sec-camp sec-camp-demo
 同時に複数のモードを別ペインで動かして「善良なユーザーのトラフィックは
 攻撃中も生き残る」ことを見せるのも効果的です。
 
-### 手動操作 (Q&A用)
-
-コンテナ内の別シェル (`docker exec -it sec-camp bash`) から:
-
-```bash
-cd /src/sec-camp/scripts
-
-# 任意の送信元を手動でブロック
-./vic.sh curl -s -X POST http://10.10.0.2:5555/block \
-  -d '[{"address":"1.2.3.4:5555","duration":"1m"}]'
-
-# ブロックリストを全解除
-./vic.sh curl -s -X POST http://10.10.0.2:5555/unblock-all
-```
-
 ## 後片付け
 
 ```bash
@@ -139,7 +124,7 @@ docker rm -f sec-camp
 | フラグ / 環境変数 | 既定値 | 意味 |
 | --- | --- | --- |
 | `-rate` / `RATE_THRESHOLD` | 30 | 1送信元あたり、これを超えるpps(パケット/秒)で自動ブロック |
-| `-block-ttl` / `BLOCK_TTL` | 15s | 自動/手動ブロックの有効期間 |
+| `-block-ttl` / `BLOCK_TTL` | 15s | 自動ブロックの有効期間 |
 
 例: `docker run --rm -it --privileged -e RATE_THRESHOLD=10 sec-camp-demo`
 
