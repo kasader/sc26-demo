@@ -13,15 +13,13 @@ import (
 	"time"
 )
 
-// Bitflag set (mirrors TCP: FIN/SYN/RST/PSH/ACK bit positions), plus an
-// RUDP-style EACK (selective ack) bit in the next slot.
+// Bitflag set, mirroring TCP's FIN/SYN/RST/PSH/ACK bit positions.
 const (
-	flagFIN  = 0x01 // graceful close, like TCP FIN
-	flagSYN  = 0x02 // open connection, like TCP SYN
-	flagRST  = 0x04 // abort connection, like TCP RST
-	flagDAT  = 0x08 // payload present, like TCP PSH
-	flagACK  = 0x10 // acknowledgment, like TCP ACK
-	flagEACK = 0x20 // extended/selective ack (RUDP-style, no TCP analog)
+	flagFIN = 0x01 // graceful close, like TCP FIN
+	flagSYN = 0x02 // open connection, like TCP SYN
+	flagRST = 0x04 // abort connection, like TCP RST
+	flagDAT = 0x08 // payload present, like TCP PSH
+	flagACK = 0x10 // acknowledgment, like TCP ACK
 
 	flagGarbage = 0xff
 )
@@ -32,7 +30,6 @@ var flagCombos = []byte{
 	flagSYN | flagACK,
 	flagDAT | flagACK,
 	flagACK,
-	flagEACK | flagACK,
 	flagFIN | flagACK,
 }
 

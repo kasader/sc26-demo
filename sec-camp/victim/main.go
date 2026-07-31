@@ -40,7 +40,7 @@ func main() {
 	var last uint64
 	for range ticker.C {
 		now := received.Load()
-		log.Printf("received %d pkt/s (total %d) -- only what survived the eBPF guard reaches here", now-last, now)
+		log.Printf("received %d pkt/s (total %d) (cleared eBPF guard)", now-last, now)
 		last = now
 	}
 }

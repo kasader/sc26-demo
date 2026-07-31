@@ -19,15 +19,13 @@ volatile const __u32 rate_threshold =
 
 #define RATE_WINDOW_NS 1000000000ULL
 
-#define Flag_FIN 0x01  // graceful close, like TCP FIN
-#define Flag_SYN 0x02  // open connection, like TCP SYN
-#define Flag_RST 0x04  // abort connection, like TCP RST
-#define Flag_DAT 0x08  // payload present, like TCP PSH
-#define Flag_ACK 0x10  // acknowledgment, like TCP ACK
-#define Flag_EACK 0x20 // extended/selective ack (RUDP-style, no TCP analog)
+#define Flag_FIN 0x01 // graceful close, like TCP FIN
+#define Flag_SYN 0x02 // open connection, like TCP SYN
+#define Flag_RST 0x04 // abort connection, like TCP RST
+#define Flag_DAT 0x08 // payload present, like TCP PSH
+#define Flag_ACK 0x10 // acknowledgment, like TCP ACK
 
-#define FLAG_VALID_MASK                                                        \
-  (Flag_FIN | Flag_SYN | Flag_RST | Flag_DAT | Flag_ACK | Flag_EACK)
+#define FLAG_VALID_MASK (Flag_FIN | Flag_SYN | Flag_RST | Flag_DAT | Flag_ACK)
 
 struct address_key {
   __u32 address; // host order

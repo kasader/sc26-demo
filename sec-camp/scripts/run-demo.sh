@@ -19,7 +19,7 @@ tmux new-session -d -s sec-camp -n demo -x 220 -y 50
 
 tmux send-keys -t sec-camp:demo.0 \
   "ip netns exec vic /usr/local/bin/guard -rate ${RATE_THRESHOLD} -block-ttl ${BLOCK_TTL} -listen 0.0.0.0:${CTRL_PORT}" Enter
-tmux split-window -t sec-camp:demo -h -p 35
+tmux split-window -t sec-camp:demo -h -p 45
 tmux send-keys -t sec-camp:demo.1 \
   "ip netns exec vic /usr/local/bin/victim -listen ${VIC_IP}:${VIC_PORT}" Enter
 tmux split-window -t sec-camp:demo.1 -v -p 60
