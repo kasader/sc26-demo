@@ -54,8 +54,8 @@ struct {
   __uint(max_entries, 4);
 } pkt_stats SEC(".maps");
 
-// The single address:port this guard protects, set by userspace via the
-// HTTP /setup endpoint. A single-entry array is just a mutable global.
+// The single address:port this guard protects, written once by userspace at
+// startup from -target. A single-entry array is just a mutable global.
 struct {
   __uint(type, BPF_MAP_TYPE_ARRAY);
   __type(key, __u32);
@@ -63,9 +63,9 @@ struct {
   __uint(max_entries, 1);
 } target SEC(".maps");
 
-// Sources to drop unconditionally, added either by the rate limiter below or
-// manually via the HTTP /block endpoint. Userspace owns eviction (TTL-based),
-// so entries stay here until it deletes them.
+// Sources to drop unconditionally, added by userspace in response to the
+// block_events below. Userspace owns eviction (TTL-based), so entries stay
+// here until it deletes them.
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
   __type(key, struct address_key);
@@ -102,25 +102,54 @@ static __always_inline void inc_stat(__u32 idx) {
 
 SEC("xdp")
 int guard(struct xdp_md *ctx) {
+  // xdp_md is the "XDP metadata" context the kernel hands us for each packet at
+  // the XDP hook -- the earliest point in the network path, right off the
+  // driver, before the kernel allocates an sk_buff. It doesn't contain the
+  // packet bytes; instead ctx->data and ctx->data_end are (32-bit) offsets to
+  // the start and one-past-the-end of the raw frame in memory. We cast them to
+  // real pointers and from here on treat the packet as a byte buffer laid out
+  // as [ Ethernet header | IP header | UDP header | payload ].
   void *data_end = (void *)(long)ctx->data_end;
   void *data = (void *)(long)ctx->data;
 
-  // Parse down to the UDP header, bailing out to XDP_PASS (let the kernel's
-  // normal stack handle it) for anything that isn't IPv4/UDP or that fails a
-  // bounds check. The verifier requires every pointer dereference below to be
-  // provably within [data, data_end), hence the repeated `> data_end` checks.
+  // Walk that layout one header at a time down to UDP, bailing out to XDP_PASS
+  // (hand the packet to the kernel's normal networking stack) for anything that
+  // isn't IPv4/UDP or that is too short. Two rules drive every step:
+  //   1. The eBPF verifier rejects the program at load time unless it can PROVE
+  //      each read stays inside [data, data_end). That is what every
+  //      `(void *)(hdr + 1) > data_end` check is: "is there room for a whole
+  //      header of this type here?" -- `hdr + 1` is pointer arithmetic that
+  //      advances by exactly sizeof(*hdr) bytes, i.e. the byte just past this
+  //      header. Without the check the verifier assumes the read could be out
+  //      of bounds and refuses to load us.
+  //   2. Multi-byte header fields are big-endian ("network byte order"), so we
+  //      compare against bpf_htons(...) (host-to-network short) rather than the
+  //      raw constant, which keeps this correct on little-endian machines.
+
+  // Ethernet header (struct ethhdr, from <linux/if_ether.h>): dst MAC, src MAC,
+  // and h_proto -- the EtherType naming the next protocol. ETH_P_IP means IPv4;
+  // anything else (IPv6, ARP, ...) is not ours, so pass it on.
   struct ethhdr *eth = data;
   if ((void *)(eth + 1) > data_end)
     return XDP_PASS;
   if (eth->h_proto != bpf_htons(ETH_P_IP))
     return XDP_PASS;
 
+  // IPv4 header (struct iphdr, from <linux/ip.h>) sits immediately after the
+  // Ethernet header. iph->protocol is the L4 protocol number; IPPROTO_UDP (17)
+  // means a UDP datagram follows. TCP/ICMP/etc. are out of scope -> pass.
   struct iphdr *iph = (void *)(eth + 1);
   if ((void *)(iph + 1) > data_end)
     return XDP_PASS;
   if (iph->protocol != IPPROTO_UDP)
     return XDP_PASS;
 
+  // The IPv4 header is variable-length: iph->ihl ("Internet Header Length") is
+  // measured in 32-bit words, so the real header size in bytes is ihl * 4
+  // (20 for a header with no options, more if options are present). We can't
+  // assume sizeof(struct iphdr) here -- we have to skip the actual header
+  // length to land on the UDP header (struct udphdr, from <linux/udp.h>), then
+  // bounds-check that too before touching udph->source / udph->dest below.
   __u32 ip_hlen = iph->ihl * 4;
   struct udphdr *udph = (void *)iph + ip_hlen;
   if ((void *)(udph + 1) > data_end)
@@ -145,9 +174,9 @@ int guard(struct xdp_md *ctx) {
       .port = bpf_ntohs(udph->source),
   };
 
-  // Blocklist: sources that either tripped the rate limiter before (and
-  // haven't had their TTL expire yet) or were blocked manually via the HTTP
-  // API are dropped immediately, before doing any further work on them.
+  // Blocklist: sources that tripped the rate limiter before and haven't had
+  // their TTL expire yet are dropped immediately, before doing any further
+  // work on them.
   if (bpf_map_lookup_elem(&blocklist, &src)) {
     inc_stat(2);
     return XDP_DROP;
