@@ -8,33 +8,40 @@ Read top to bottom. `>` lines are what you say. `[...]` lines are what you do.
 Target runtime ~18 min. Guard is already running with `-rate 30`, target
 `10.10.0.2:9999`. Attacker commands go in the bottom-right tmux pane.
 
-**You only type three things live:** the blocklist lookup (§6), the rate
-limiter (§7), and the protocol check (§9). Everything else is already on
-screen and you explain it by pointing at it. Each of those sections gives you
-the exact code and says where it goes.
+**You type no code live.** Each defense layer is a git branch, and you bring it
+in by showing the diff and then running it. Three times: §6, §7, §9. Two
+commands, both in the guard pane (Ctrl+C the dashboard first):
 
-The code blocks below omit the comments and the two `if (is_debug)
-bpf_printk(...)` calls that are in the committed `guard.c` — don't type those
-on stage. What you type still compiles and behaves identically; it's just the
-committed file minus the narration.
+```bash
+./stage.sh show 2     # what stage 2 adds to guard.c — a diff, nothing else
+./stage.sh run 2      # check it out, rebuild, restart the guard
+```
 
-**Before anyone arrives:** check out `demo/step-0-parse`, container up, tmux
-attached, all three panes visible, dashboard idle at zeros. Editor open on
-`guard.c` with everything down to `inc_stat(0);` already written — includes,
-maps, structs, the whole header parse, the target filter. The three defense
-layers are **not** there; the function ends in a placeholder — a `// DEMO STEP`
-comment and `inc_stat(1); return XDP_PASS;` — which is what makes §3's baseline
+| stage | branch | comes in at |
+|---|---|---|
+| 0 | `demo/step-0-parse` | where you start — parse + target filter |
+| 1 | `demo/step-1-blocklist` | §6 blocklist |
+| 2 | `demo/step-2-ratelimit` | §7 rate limiter |
+| 3 | `demo/step-3-protocol` | §9 protocol check (same `guard.c` as `main`) |
+
+`show` only reads git, so it can't fail mid-talk and it can't lose your place.
+Only §7 and §9 actually check anything out. You can jump backwards any time —
+`./stage.sh run 0` returns to the opening state.
+
+The diff shows the committed file, so it carries the explanatory comments and
+the two `if (is_debug) bpf_printk(...)` lines. Point at the code, not those. The
+blocks in §6/§7/§9 below are the same lines with the comments stripped, so you
+know what you're pointing at.
+
+**Before anyone arrives:** `git checkout demo/step-0-parse`, then `make run` —
+which bind-mounts this repo into the container, so the branch you're on is the
+code the demo compiles. tmux attached, all three panes visible, dashboard idle
+at zeros. Editor open on `guard.c`: includes, maps, structs, the whole header
+parse, the target filter — everything down to `inc_stat(0);`. The three defense
+layers are **not** there; the function ends in a placeholder, a `// DEMO STEP`
+comment and `inc_stat(1); return XDP_PASS;`, which is what makes §3's baseline
 pass everything. Screen should look calm and mean nothing yet — you explain it
 in §0.
-
-**One rule for all the typing:** §6 and §7 go *above* those two placeholder
-lines. §9 *replaces* them. That way the file compiles and the counters stay
-honest at every point in the talk.
-
-**If the live typing goes wrong:** every stage has a branch holding that stage
-finished, compiled and load-tested — `demo/step-1-blocklist` (§6),
-`demo/step-2-ratelimit` (§7), `demo/step-3-protocol` (§9, same `guard.c` as
-`main`). Check one out, rebuild with the §7 command, carry on talking.
 
 **Running long?** The two asides you can drop without breaking anything later
 are the `ihl` bug (§4) and the endianness bug (§5) — about a minute together.
@@ -93,9 +100,9 @@ Never cut §8 or §9; those two are the talk.
 [Point at the editor.]
 
 > And this is the code. The boring half is already written — I'll point at that
-> rather than make you watch me type it. What's missing is the actual defense:
-> about twenty lines, which I'll write in front of you, and which will then be
-> running in the kernel of this machine.
+> rather than read it to you. What's missing is the actual defense: about forty
+> lines, arriving in three steps. You'll see each step land, and each one will be
+> running in the kernel of this machine within seconds.
 >
 > Stop me and ask things as I go — it's a booth, not a lecture. Let's start
 > with why any of this is hard.
@@ -183,7 +190,7 @@ attacker -target 10.10.0.2:9999 -mode legit
 
 ## 4. Parsing — already written, just read it (1.5 min)
 
-[Scroll to the top of `guard()`. Type nothing in this section.]
+[Scroll to the top of `guard()` in the editor. No commands in this section.]
 
 > This part I already wrote — mechanical, and near-identical in every XDP
 > program on earth. Thirty seconds each.
@@ -242,20 +249,25 @@ attacker -target 10.10.0.2:9999 -mode legit
 
 > And that's the first counter — total, meaning "a packet I'm responsible for."
 >
-> That's the boring half. From here it's empty, and this is the part I want to
-> write in front of you. Three layers, cheapest first.
+> That's the boring half. From here it's empty. Three layers of defense,
+> cheapest first, and I'll bring them in one at a time so you can see exactly
+> what each one costs and what it buys.
 
 ---
 
-## 6. Layer 1: blocklist (1.5 min) ← start typing here
+## 6. Layer 1: blocklist (1.5 min) ← first branch switch
 
-**Where:** inside `guard()`, directly below `inc_stat(0);` and above the
-placeholder that currently ends the function. Everything from here to §9 gets
-typed between `inc_stat(0);` and those placeholder lines.
+[Ctrl+C the dashboard. Show what stage 1 adds — this only reads git, it doesn't
+change anything yet.]
 
-> Okay. Now I write.
+```bash
+./stage.sh show 1
+```
 
-**Type — part 1 (the identity):**
+> Layer one. That's the entire change: eight lines of code, and the rest is
+> comments. Let me read it with you.
+
+**What it adds — part 1 (the identity):**
 
 ```c
   struct address_key src = {
@@ -268,7 +280,7 @@ typed between `inc_stat(0);` and those placeholder lines.
 >
 > IP, and port. Hold that thought.
 
-**Type — part 2 (the lookup), directly below it:**
+**What it adds — part 2 (the lookup), directly below it:**
 
 ```c
   if (bpf_map_lookup_elem(&blocklist, &src)) {
@@ -282,14 +294,26 @@ typed between `inc_stat(0);` and those placeholder lines.
 >
 > That's a design principle, not an optimization: known-bad is the cheapest
 > check you have, so it goes first.
+>
+> And on its own, this layer does nothing at all. Nothing puts anyone on that
+> blocklist yet. So I'm not even going to run it — that's the next branch.
+
+[Don't reload here. Stage 1 is behaviourally identical to stage 0 and the
+dashboard would look unchanged, which reads as "your code did nothing."]
 
 ---
 
-## 7. Layer 2: rate limiter (2 min)
+## 7. Layer 2: rate limiter (2 min) ← second branch switch
 
-**Where:** directly below the blocklist `if` block you just typed.
+[Show what stage 2 adds. Still just a diff.]
 
-**Type — part 1 (the window):**
+```bash
+./stage.sh show 2
+```
+
+> Layer two, and this is the biggest of the three — about twenty-five lines.
+
+**What it adds — part 1 (the window):**
 
 ```c
   __u64 now = bpf_ktime_get_ns();
@@ -304,13 +328,11 @@ typed between `inc_stat(0);` and those placeholder lines.
     rs->count++;
 ```
 
-*(Leave that last `else` open — part 2 finishes it.)*
-
 > Now: how fast is this sender going? One-second window, per sender. First
 > packet starts a window. If a full second has passed, reset. Otherwise,
 > count it.
 
-**Type — part 2, continuing straight on:**
+**What it adds — part 2, continuing straight on:**
 
 ```c
     if (rs->count > rate_threshold) {
@@ -334,20 +356,20 @@ typed between `inc_stat(0);` and those placeholder lines.
 > I don't wait for the Go program. By the time it reads that message, the drop
 > already happened. The kernel enforces; userspace just keeps the notes.
 
-### Reload, then run flood
+### Now run it, then run flood
 
-[In the guard pane: Ctrl+C, then rebuild and restart. Takes a few seconds —
-talk over it, don't stand in silence.]
+[Guard pane. This is the first switch that actually changes the running code:
+it checks out stage 2, rebuilds, and restarts the guard. Takes a few seconds and
+prints each step — talk over it, don't stand in silence.]
 
 ```bash
-cd /src/sec-camp/guard && go generate ./... && go build -o /usr/local/bin/guard . \
-  && ip netns exec vic /usr/local/bin/guard -rate 30 -block-ttl 15s \
-       -nic veth-vic -target 10.10.0.2:9999
+./stage.sh run 2
 ```
 
-> While that builds — this is the compile-to-bytecode step, then the kernel
-> loads it and the verifier checks it. If I got a bounds check wrong, it fails
-> right here and tells me why.
+> Watch the three lines it prints, because that's the whole pipeline. It takes
+> the C, compiles it to bytecode — not to a normal program — and hands it to the
+> running kernel, where the verifier checks it before it's allowed anywhere near
+> a packet. If I got a bounds check wrong, it fails right there and tells me why.
 
 [Then, in the attacker pane:]
 
@@ -377,7 +399,8 @@ attacker -target 10.10.0.2:9999 -mode flood
 
 ## 8. The trap (2.5 min) ← this is the talk
 
-[Point back at the `src` struct.]
+[Point back at the `src` struct — stage 2 is checked out, so it's in the editor
+now.]
 
 > Except — look at how I decided who a sender is. IP, and port.
 >
@@ -413,7 +436,7 @@ attacker -target 10.10.0.2:9999 -mode evasive
 
 ---
 
-## 9. Layer 3 (3 min)
+## 9. Layer 3 (3 min) ← third branch switch
 
 > So let's stop asking how fast they're sending, and start asking what they're
 > sending.
@@ -422,13 +445,18 @@ attacker -target 10.10.0.2:9999 -mode evasive
 > Five bits that mean something: SYN, ACK, FIN, and so on. A real client sets a
 > sensible combination. SYN. Or DATA plus ACK.
 
-**Where:** directly below the rate limiter's closing `}` — and this is the one
-place you **delete** something first. The placeholder that's been sitting at the
-end of the function (the `// DEMO STEP` comment and its `inc_stat(1); return
-XDP_PASS;`) goes away, and this block takes its place and ends the function.
-Leave it in and every packet passes before it ever reaches the flag check.
+[Leave the attack running and show the last diff.]
 
-**Type — part 1 (the bounds check):**
+```bash
+./stage.sh show 3
+```
+
+> Fifteen lines. And notice the red lines at the bottom — this is the one step
+> that *removes* something. That `return XDP_PASS` at the end of the function,
+> the one that's been letting everything through since we started, is what the
+> new check replaces.
+
+**What it adds — part 1 (the bounds check):**
 
 ```c
   __u8 *payload = (void *)(udph + 1);
@@ -441,7 +469,7 @@ Leave it in and every packet passes before it ever reaches the flag check.
 > Bounds check first — verifier's still watching. No flag byte in there at all?
 > That's malformed, drop it.
 
-**Type — part 2 (the actual check):**
+**What it adds — part 2 (the actual check):**
 
 ```c
   __u8 flag = payload[3];
@@ -464,13 +492,11 @@ Leave it in and every packet passes before it ever reaches the flag check.
 >
 > No state. No memory. No history. It doesn't care who sent it or how fast.
 
-[Reload the guard — same command as §7. Leave the attacker running while you
-do it, so the numbers change under everyone's eyes the moment it comes back.]
+[Now switch. Leave the attacker running while you do it, so the numbers change
+under everyone's eyes the moment the guard comes back.]
 
 ```bash
-cd /src/sec-camp/guard && go generate ./... && go build -o /usr/local/bin/guard . \
-  && ip netns exec vic /usr/local/bin/guard -rate 30 -block-ttl 15s \
-       -nic veth-vic -target 10.10.0.2:9999
+./stage.sh run 3
 ```
 
 [If you stopped the attacker, restart it:]
@@ -519,6 +545,11 @@ attacker -target 10.10.0.2:9999 -mode evasive
 ---
 
 ## Answers to likely questions
+
+**Why branches instead of typing it live?** Because a typo in a twenty-five-line
+eBPF function costs five minutes of a twenty-minute slot. The diffs are the same
+code you'd have watched me type, and the compile and the verifier still run in
+front of you.
 
 **Why not iptables?** iptables runs after the kernel allocates the sk_buff. XDP
 runs before. Under a flood that difference is the whole game.
