@@ -4,50 +4,6 @@
 
 Use: https://excalidraw.com/
 
-上から順に読む。`>` の行が話す内容、`[...]` の行が動作。所要時間の目安は
-約18分。guard は `-rate 30`、ターゲット `10.10.0.2:9999` で起動済みの状態。
-攻撃コマンドは tmux の右下ペインで実行する。
-
-**その場でコードは書かない。** 防御の各層は git のブランチになっていて、
-diff を見せてから実際に動かす、という形で入れていく。やるのは3回、§6・§7・§9。
-コマンドは2つだけ。どちらも guard ペインで叩く（先にダッシュボードを Ctrl+C）:
-
-```bash
-./stage.sh show 2     # ステージ2が guard.c に何を足すか。diff を出すだけ
-./stage.sh run 2      # チェックアウトして、ビルドして、guard を再起動
-```
-
-| ステージ | ブランチ | 入るところ |
-|---|---|---|
-| 0 | `demo/step-0-parse` | 開始状態 — パースとターゲットフィルタ |
-| 1 | `demo/step-1-blocklist` | §6 ブロックリスト |
-| 2 | `demo/step-2-ratelimit` | §7 レート制限 |
-| 3 | `demo/step-3-protocol` | §9 プロトコルチェック（`guard.c` は `main` と同じ） |
-
-`show` は git を読むだけなので、本番で失敗しないし、今どこにいるかも見失わない。
-実際にチェックアウトが走るのは §7 と §9 だけ。いつでも戻れる —
-`./stage.sh run 0` で開始状態に戻る。
-
-diff はコミット済みのファイルなので、説明用のコメントと
-`if (is_debug) bpf_printk(...)` の2行も一緒に出てくる。指さすのはコードの方。
-§6・§7・§9 のコードブロックは、そこからコメントを抜いた同じ行なので、
-何を指しているかはそれで分かる。
-
-**人が来る前に:** `git checkout demo/step-0-parse`、そのあと `make run` —
-これでこのリポジトリがコンテナにバインドマウントされ、いま居るブランチが
-そのままデモがコンパイルするコードになる。tmux アタッチ済み、3ペインすべて表示、
-ダッシュボードはゼロのまま。エディタは `guard.c` を開いておく —
-include、マップ、構造体、ヘッダのパース、ターゲットフィルタ、
-つまり `inc_stat(0);` までが書かれた状態。防御3層は**まだ無い**状態で、
-関数の末尾は仮置きの2行 — `// DEMO STEP` のコメントと
-`inc_stat(1); return XDP_PASS;` — で終わっている。§3 のベースラインで全部
-パスするのはこの2行のおかげ。画面はまだ何も意味していない状態にしておく —
-§0 で説明する。
-
-**時間が押したら:** 後ろに影響せず落とせる余談は2つ。§4 の `ihl` のバグと
-§5 のエンディアンのバグ。2つで約1分。§8 と §9 は絶対に削らない。
-あの2つがこの話の本体。
-
 ---
 
 ## 0. 導入（2分）
@@ -116,8 +72,10 @@ include、マップ、構造体、ヘッダのパース、ターゲットフィ�
 
 [victim ペインを指す。]
 
+# TODO: Make sure to clean up this section and remove the question. Keep the content, strip the question for the sake of time.
+
 > 最初の質問です。あのサーバーにゴミパケットを大量に送りつけたとき、
-> 実際に壊れるのは何でしょうか。たいていの人は「帯域」と答えます。
+> 実際にネックになるのは何でしょうか。たいていの人は「帯域」と答えます。
 > でも普通はそこじゃないんです。壊れるのはここです。
 
 [パケットの経路を描く、または指す。]
@@ -125,6 +83,8 @@ include、マップ、構造体、ヘッダのパース、ターゲットフィ�
 ```text
 NIC → ドライバ → [sk_buff を確保] → iptables → IP → UDP → ソケット → アプリ
 ```
+
+## TODO: Make sure that you point out the allocation of `sk_buff` as being the key topic of this part of the discussion (section 1 KEY POINT).
 
 > パケットが1個届くたびに、カーネルはそれを管理するための小さな構造体 —
 > sk_buff — をメモリに確保します。そのあとファイアウォール、IP層、UDP層を
@@ -216,13 +176,13 @@ attacker -target 10.10.0.2:9999 -mode legit
 
 > そして、さっきの verifier がここに出てきます。
 > イーサネットヘッダを読みたいが、いきなり読むことはできません。
-> まず「そこにヘッダ1個分が本当に存在する」ことを証明しないといけない。
+> まず「そこにヘッダ1個分が本当に存在する」ことを証明しないといけない。****
 > それがこの行で、`eth + 1` は「このヘッダのすぐ後ろのバイト」。
 > つまり「そこまでの長さがありますか?」と聞いている。
 > この行を消すと、お行儀の問題ではなく**本当にロードされません**。
 >
 > で、IPv4じゃなかったら? PASS です。私の担当じゃない。通常のスタックに任せます。
-
+<!-- 
 [iphdr のチェック、続けて ihl の行を指す。]
 
 > IPも同じです。長さがあることを証明して、それからプロトコル番号を見る。
@@ -240,10 +200,10 @@ attacker -target 10.10.0.2:9999 -mode legit
 >
 > 気づいてほしいのは、「自分に関係ないもの」はここまでで全部そのまま
 > 素通りしている、ということです。
-> このフィルタは、マシンの他の部分からは見えていません。
+> このフィルタは、マシンの他の部分からは見えていません。 -->
 
 ---
-
+<!-- 
 ## 5. ターゲットフィルタ — ここも書いてある（0.5分）
 
 [target のルックアップと比較を指す。]
@@ -267,9 +227,17 @@ attacker -target 10.10.0.2:9999 -mode legit
 > 防御を3層、**安いものから順に**、1つずつ入れていきます。
 > それぞれ何がいくらで何が買えるのか、見えるように入れます。
 
----
+--- -->
 
-## 6. レイヤ1: ブロックリスト（1.5分） ← 1回目のブランチ切り替え
+# TODO: `inc_stat` maybe explain in a little bit more detail.
+
+1. Context & Background
+
+2. Rate limit () 
+
+3. Protocol check 
+
+## 2.1 ブロックリスト pt. 1（5分）
 
 [ダッシュボードを Ctrl+C。ステージ1が何を足すかを見せる。
 これは git を読むだけで、まだ何も変わらない。]
@@ -291,8 +259,6 @@ attacker -target 10.10.0.2:9999 -mode legit
 ```
 
 > まず送信元の「身元」を作ります。IPアドレスと、ポート。
->
-> IPと、**ポート**。これ、覚えておいてください。
 
 **足されるコード — その2（参照）。すぐ下に続けて:**
 
@@ -319,7 +285,7 @@ attacker -target 10.10.0.2:9999 -mode legit
 
 ---
 
-## 7. レイヤ2: レート制限（2分） ← 2回目のブランチ切り替え
+## 2.2 ブロックリスト pt. 2（5分）
 
 [ステージ2が何を足すかを見せる。まだ diff だけ。]
 
@@ -351,6 +317,8 @@ attacker -target 10.10.0.2:9999 -mode legit
 
 **足されるコード — その2。そのまま続けて:**
 
+### Main point of topic 2
+
 ```c
     if (rs->count > rate_threshold) {
       struct block_event evt = {
@@ -376,7 +344,7 @@ attacker -target 10.10.0.2:9999 -mode legit
 > ドロップはとっくに終わっています。
 > **カーネルが執行し、ユーザー空間は記録をつけているだけ**です。
 
-### 実際に動かして flood を実行
+### 2.3 実際に動かして flood を実行
 
 [guard のペイン。ここが動いているコードを実際に変える最初の切り替え。
 ステージ2をチェックアウトし、ビルドし直し、guard を再起動する。
@@ -417,7 +385,9 @@ attacker -target 10.10.0.2:9999 -mode flood
 
 ---
 
-## 8. 罠（2.5分） ← ここが本題
+### Make sure to emphasize the fact that just a check to ensure that the traffic being sent (payload) is valid within kernelspace so we don't need to waste processing time/allocations in application space (which is the point of this whole thing). It would also be important to emphasize during the presentation that any packets which are "valid" but exist below the rate-limit sent from a bad actor are STILL able to pass through. This is not a cure-all (this should be emphasized).
+
+## 2.4/3.0 罠（2.5分） ← ここが本題
 
 [`src` 構造体に戻って指す — ステージ2をチェックアウトしたので、
 いまエディタにも出ている。]
@@ -429,7 +399,7 @@ attacker -target 10.10.0.2:9999 -mode flood
 >
 > どのパケットも「全く新しい送信元」に見えます。
 > ウィンドウは一度も埋まりません。
-> そして**どの1つも、ルール違反をしていません**。
+> そして**どの1つも、**ルール違反をしていません****。
 >
 > でも50×5で、毎秒250パケットが私のサーバーに届いています。
 > さっきブロックしたフラッディングと同じオーダーのトラフィックです。
@@ -456,7 +426,7 @@ attacker -target 10.10.0.2:9999 -mode evasive
 
 ---
 
-## 9. レイヤ3（3分） ← 3回目のブランチ切り替え
+## 3.1　プロトコル不正チェック（3分）
 
 > なので、「どれくらいの速さで送っているか」を聞くのはやめて、
 > 「**何を**送っているか」を聞くことにします。
