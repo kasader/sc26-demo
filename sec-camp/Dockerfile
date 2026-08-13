@@ -18,6 +18,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # image, so use gcc -dumpmachine (gcc ships by default for cgo) instead.
 RUN ln -sf "/usr/include/$(gcc -dumpmachine)/asm" /usr/include/asm
 
+# The demo's tmux panes run login shells, which re-read /etc/profile and reset
+# PATH, losing the go toolchain this image puts on it. Put it back for any shell
+# the presenter ends up typing into.
+RUN printf 'export PATH="$PATH:/usr/local/go/bin"\n' > /etc/profile.d/go.sh
+
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY sec-camp ./sec-camp

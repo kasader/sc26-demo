@@ -9,6 +9,10 @@
 # see the same working tree your editor does on the host.
 set -euo pipefail
 
+# tmux starts each pane as a login shell, which re-reads /etc/profile and resets
+# PATH -- dropping the golang image's /usr/local/go/bin. Don't depend on it.
+export PATH="$PATH:/usr/local/go/bin"
+
 REPO=/src
 RATE_THRESHOLD="${RATE_THRESHOLD:-30}"
 BLOCK_TTL="${BLOCK_TTL:-15s}"
