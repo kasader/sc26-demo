@@ -34,9 +34,14 @@ help:
 build:
 	docker build -f $(DOCKERFILE) -t $(IMAGE) .
 
+# The repo is bind-mounted over the image's copy at /src so the container sees
+# your working tree and your git state: `stage.sh` can check out the demo/step-*
+# branches and rebuild from them mid-demo. The mount hides the generated
+# guard_bpfel.go/.o baked into the image, which is why every rebuild path runs
+# `go generate` first.
 run:
 	@docker rm -f $(CONTAINER) >/dev/null 2>&1 || true
-	docker run --rm -it --privileged --name $(CONTAINER) $(RUN_ENV) $(IMAGE)
+	docker run --rm -it --privileged --name $(CONTAINER) -v "$(CURDIR)":/src $(RUN_ENV) $(IMAGE)
 
 stop:
 	docker rm -f $(CONTAINER)

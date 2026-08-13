@@ -11,6 +11,12 @@
 # Test binary, built with `go test -c`
 *.test
 
+# bpf2go output: generated into the working tree by `go generate` (and by the
+# in-container rebuilds the demo does), never committed.
+guard_bpfel.go
+guard_bpfeb.go
+*.o
+
 # Code coverage profiles and other test artifacts
 *.out
 coverage.*
