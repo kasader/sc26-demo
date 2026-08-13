@@ -2,6 +2,8 @@
 
 *[日本語版はこちら / Japanese version here](DEMO_GUIDE.jp.md)*
 
+Use: https://excalidraw.com/
+
 Read top to bottom. `>` lines are what you say. `[...]` lines are what you do.
 Target runtime ~21 min. Guard is already running with `-rate 30`, target
 `10.10.0.2:9999`. Attacker commands go in the bottom-right tmux pane.
@@ -16,12 +18,23 @@ bpf_printk(...)` calls that are in the committed `guard.c` — don't type those
 on stage. What you type still compiles and behaves identically; it's just the
 committed file minus the narration.
 
-**Before anyone arrives:** container up, tmux attached, all three panes
-visible, dashboard idle at zeros. Editor open on `guard.c` with everything
-down to `inc_stat(0);` already written — includes, maps, structs, the whole
-header parse, the target filter. The three defense layers are **not** there;
-the function ends right after `inc_stat(0);`. Screen should look calm and mean
-nothing yet — you explain it in §0.
+**Before anyone arrives:** check out `demo/step-0-parse`, container up, tmux
+attached, all three panes visible, dashboard idle at zeros. Editor open on
+`guard.c` with everything down to `inc_stat(0);` already written — includes,
+maps, structs, the whole header parse, the target filter. The three defense
+layers are **not** there; the function ends in a placeholder — a `// DEMO STEP`
+comment and `inc_stat(1); return XDP_PASS;` — which is what makes §3's baseline
+pass everything. Screen should look calm and mean nothing yet — you explain it
+in §0.
+
+**One rule for all the typing:** §6 and §7 go *above* those two placeholder
+lines. §9 *replaces* them. That way the file compiles and the counters stay
+honest at every point in the talk.
+
+**If the live typing goes wrong:** every stage has a branch holding that stage
+finished, compiled and load-tested — `demo/step-1-blocklist` (§6),
+`demo/step-2-ratelimit` (§7), `demo/step-3-protocol` (§9, same `guard.c` as
+`main`). Check one out, rebuild with the §7 command, carry on talking.
 
 ---
 
@@ -251,9 +264,9 @@ attacker -target 10.10.0.2:9999 -mode legit
 
 ## 6. Layer 1: blocklist (2 min) ← start typing here
 
-**Where:** inside `guard()`, directly below `inc_stat(0);` — which is currently
-the last line of the function. Everything from here to §9 gets typed between
-`inc_stat(0);` and the function's closing `}`.
+**Where:** inside `guard()`, directly below `inc_stat(0);` and above the
+placeholder that currently ends the function. Everything from here to §9 gets
+typed between `inc_stat(0);` and those placeholder lines.
 
 > Okay. Now I write.
 
@@ -424,8 +437,11 @@ attacker -target 10.10.0.2:9999 -mode evasive
 > Five bits that mean something: SYN, ACK, FIN, and so on. A real client sets a
 > sensible combination. SYN. Or DATA plus ACK.
 
-**Where:** directly below the rate limiter's closing `}`. This block ends the
-function.
+**Where:** directly below the rate limiter's closing `}` — and this is the one
+place you **delete** something first. The placeholder that's been sitting at the
+end of the function (the `// DEMO STEP` comment and its `inc_stat(1); return
+XDP_PASS;`) goes away, and this block takes its place and ends the function.
+Leave it in and every packet passes before it ever reaches the flag check.
 
 **Type — part 1 (the bounds check):**
 
