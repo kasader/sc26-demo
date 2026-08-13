@@ -5,7 +5,7 @@
 Use: https://excalidraw.com/
 
 Read top to bottom. `>` lines are what you say. `[...]` lines are what you do.
-Target runtime ~21 min. Guard is already running with `-rate 30`, target
+Target runtime ~18 min. Guard is already running with `-rate 30`, target
 `10.10.0.2:9999`. Attacker commands go in the bottom-right tmux pane.
 
 **You only type three things live:** the blocklist lookup (§6), the rate
@@ -36,6 +36,10 @@ finished, compiled and load-tested — `demo/step-1-blocklist` (§6),
 `demo/step-2-ratelimit` (§7), `demo/step-3-protocol` (§9, same `guard.c` as
 `main`). Check one out, rebuild with the §7 command, carry on talking.
 
+**Running long?** The two asides you can drop without breaking anything later
+are the `ihl` bug (§4) and the endianness bug (§5) — about a minute together.
+Never cut §8 or §9; those two are the talk.
+
 ---
 
 ## 0. Opening (2 min)
@@ -44,13 +48,12 @@ finished, compiled and load-tested — `demo/step-1-blocklist` (§6),
 
 > Hi. I'm [name], I work on [one line — keep it to one].
 >
-> Quick question before I start, just so I know who I'm talking to. Hands up if
-> you've written C before. Okay. Hands up if you've heard of eBPF.
+> Quick question so I know who I'm talking to: hands up if you've heard of eBPF.
 
 [However many hands: keep going. Don't adjust the talk, just know the room.]
 
-> Doesn't matter either way — you won't need either one to follow this. If you
-> know what a network packet is, you're fine.
+> Either way you're fine — if you know what a network packet is, you can follow
+> this.
 >
 > Here's what we're going to do in the next twenty minutes.
 >
@@ -58,56 +61,53 @@ finished, compiled and load-tested — `demo/step-1-blocklist` (§6),
 > live, that runs *inside the Linux kernel*. Then the attacker is going to
 > adapt, and beat my defense. And then we fix it.
 >
-> That middle part is the bit I actually want you to take away. Not "here's a
-> firewall that works." A firewall that works is boring. What's interesting is
-> watching a reasonable defense — the one basically everybody builds first —
-> get walked straight through by an attacker who changed *how* they attack
-> rather than how hard.
+> That middle part is the bit I want you to take away. Not "here's a firewall
+> that works" — a firewall that works is boring. What's interesting is watching
+> a reasonable defense, the one basically everybody builds first, get walked
+> straight through by an attacker who changed *how* they attack rather than how
+> hard.
 
 [Now turn to the screen.]
 
-> So, what you're looking at. Everything on this screen is inside one container
-> on this laptop. Nothing here touches the real network, which is also why it's
-> fine for me to run an attack in a room full of people.
+> So, what you're looking at. All of this is one container on this laptop.
+> Nothing here touches the real network, which is also why it's fine for me to
+> run an attack in a room full of people.
 
 [Point at the left pane.]
 
-> Left: my defense. It's not doing anything yet, all zeros.
+> Left: my defense. Not doing anything yet, all zeros.
 
 [Top-right.]
 
-> Top right: the victim. A UDP server. It does nothing interesting — packets
-> come in, it logs them. That's it. That's the thing I'm protecting.
+> Top right: the victim. A UDP server that logs whatever arrives, and nothing
+> else. That's the thing I'm protecting.
 
 [Bottom-right.]
 
-> Bottom right: a shell on the attacker. As far as the network is concerned,
-> that's a different computer.
+> Bottom right: a shell on the attacker — as far as the network cares, a
+> different computer.
 >
 > Two computers and a cable between them — except all three of those are
 > software.
 
 [Point at the editor.]
 
-> And this is the code. Some of it's already written — the boring, mechanical
-> half, which I'll walk you through rather than make you watch me type. What's
-> missing is the actual defense. That's about twenty lines, I'll write those
-> here in front of you, and they'll be running in the kernel of this machine.
+> And this is the code. The boring half is already written — I'll point at that
+> rather than make you watch me type it. What's missing is the actual defense:
+> about twenty lines, which I'll write in front of you, and which will then be
+> running in the kernel of this machine.
 >
 > Stop me and ask things as I go — it's a booth, not a lecture. Let's start
 > with why any of this is hard.
 
 ---
 
-## 1. The problem (2 min)
+## 1. The problem (1.5 min)
 
 [Point at the victim pane.]
 
-> This is a UDP server. It does nothing interesting — it receives packets and
-> logs them. And I'm going to attack it.
->
-> First question: when someone floods a server with garbage, what actually
-> breaks? Most people say bandwidth. It's usually not. It's this:
+> First question: when I flood that server with garbage, what actually breaks?
+> Most people say bandwidth. It's usually not. It's this:
 
 [Draw or point at the packet path.]
 
@@ -115,22 +115,21 @@ finished, compiled and load-tested — `demo/step-1-blocklist` (§6),
 NIC → driver → [allocate sk_buff] → iptables → IP → UDP → socket → your program
 ```
 
-> Every packet that arrives, the kernel allocates a little struct to track it.
-> Called an sk_buff. Then it walks it up through the firewall, the IP layer,
-> the UDP layer, and finally hands it to your program, which looks at it and
-> says "this is garbage" and throws it away.
+> For every packet that arrives, the kernel allocates a little struct to track
+> it — an sk_buff — then walks it up through the firewall, IP, UDP, and hands it
+> to your program, which looks at it and says "this is garbage."
 >
 > You did all that work — allocate, parse, route, copy, wake up a process — for
-> a packet you were always going to discard. Do that a hundred thousand times a
-> second and the machine falls over. Not because the pipe is full. Because you
-> spent your entire CPU on paperwork for junk mail.
+> a packet you were always going to discard. A hundred thousand times a second
+> and the machine falls over. Not because the pipe is full. Because you spent
+> your entire CPU on paperwork for junk mail.
 >
 > So the fix is obvious: throw it away earlier. The question is how early can
 > you get.
 
 ---
 
-## 2. XDP and eBPF (3 min)
+## 2. XDP and eBPF (2 min)
 
 > The answer is XDP. It's a hook that runs here —
 
@@ -141,78 +140,68 @@ NIC → driver → [allocate sk_buff] → iptables → IP → UDP → socket →
 > bytes and say one of two words: PASS, meaning carry on into the normal stack,
 > or DROP, meaning free it right now.
 >
-> A DROP here costs essentially nothing. No allocation, no parsing, no wake-up.
-> And the sender gets no response at all — not even an error — so they learn
-> nothing about what happened.
+> A DROP here costs essentially nothing — no allocation, no parsing, no wake-up
+> — and the sender gets nothing back, not even an error, so they learn nothing
+> about what happened.
 >
-> Now, the obvious problem: that's inside the kernel. How do I get my code into
-> the kernel? Historically you wrote a kernel module, and if you got it wrong
-> the whole machine panicked.
+> Now, the obvious problem: that's inside the kernel. Historically you got code
+> in there by writing a kernel module, and if you got it wrong the whole machine
+> panicked.
 >
-> Instead we use eBPF. I write C, compile it to a special bytecode — not to a
+> Instead we use eBPF. I write C, compile it to a special bytecode — not a
 > normal program — and hand that bytecode to the running kernel. No reboot, no
 > module, no crash.
 >
 > And the reason it can't crash is the interesting part. Before the kernel runs
-> a single instruction of mine, it runs a thing called the verifier. The
-> verifier is a proof engine. It has to prove two things about my code: that it
-> always finishes — no infinite loops — and that it never reads memory outside
-> what it's allowed to touch.
+> a single instruction of mine, it runs the verifier. The verifier is a proof
+> engine, and it has to prove two things: that my code always finishes — no
+> infinite loops — and that it never reads memory outside what it's allowed to
+> touch. If it can't prove that, the program doesn't load. Not a crash later; it
+> just refuses.
 >
-> If it can't prove that, my program does not load. Not a crash later. It just
-> refuses.
->
-> So in a minute, when I show you a bunch of checks that look unnecessary,
-> understand what they actually are. That's not someone being careful. That's a
-> proof, and the kernel is the examiner.
+> So in a minute, when I show you checks that look unnecessary, understand what
+> they are. That's not someone being careful. That's a proof, and the kernel is
+> the examiner.
 
-[Point at the two namespaces.]
-
-> One last thing. This is two computers and a network cable — except all three
-> are software, inside this one container. Left side is the attacker, right
-> side is the victim, and my filter is attached to the victim's end of the
-> cable. Nothing here touches the real network.
+[Point at the two namespaces — my filter sits on the victim's end of the cable.]
 
 ---
 
-## 3. Baseline (1 min)
+## 3. Baseline (0.5 min)
 
 ```bash
 attacker -target 10.10.0.2:9999 -mode legit
 ```
 
-> Three clients, two packets a second each. Normal traffic. Everything passes,
-> the victim logs it, nothing gets dropped. That's the "before" picture.
-> Remember what the passed counter looks like.
+> Three clients, two packets a second each. Normal traffic — everything passes,
+> the victim logs it, nothing gets dropped. Remember what the passed counter
+> looks like.
 
 [Ctrl+C.]
 
 ---
 
-## 4. Parsing — already written, just read it (2 min)
+## 4. Parsing — already written, just read it (1.5 min)
 
 [Scroll to the top of `guard()`. Type nothing in this section.]
 
-> This is the part I already wrote, and I'm not going to make you watch me type
-> it, because it's mechanical and it's the same in every XDP program on earth.
-> But you need to know what it does, so: thirty seconds each.
+> This part I already wrote — mechanical, and near-identical in every XDP
+> program on earth. Thirty seconds each.
 >
 > This function runs on every single packet that arrives on this interface.
 
 [Point at the two casts.]
 
-> The context the kernel hands me doesn't contain the packet. It contains two
-> numbers: where the packet starts, and where it ends. Everything below is
-> treating that range as a byte buffer — Ethernet header, then IP header, then
-> UDP header, then payload.
+> The context the kernel hands me doesn't contain the packet — just two numbers:
+> where it starts and where it ends. Everything below treats that range as a
+> byte buffer: Ethernet header, IP header, UDP header, payload.
 
 [Point at the ethhdr bounds check.]
 
-> And here's the verifier I just told you about. I want to read the Ethernet
-> header. I can't just read it. I have to first prove there's a whole header
-> actually there. That's this line — `eth + 1` means "the byte just past this
-> header," so it's asking: is there room? Delete that line and the program will
-> not load. That's not a style rule. It genuinely won't load.
+> And here's the verifier. I want to read the Ethernet header, and I can't just
+> read it — I have to prove a whole header is actually there. That's this line:
+> `eth + 1` is "the byte just past this header," so it's asking, is there room?
+> Delete it and the program will not load. That's not a style rule.
 >
 > And if it's not IPv4? PASS. Not my problem, let the normal stack handle it.
 
@@ -221,23 +210,21 @@ attacker -target 10.10.0.2:9999 -mode legit
 > Same again for IP: prove there's room, then check the protocol. Not UDP? PASS.
 >
 > One thing here is worth your attention, because it's a real bug people ship.
-> The IP header isn't a fixed size. This field, `ihl`, holds its length — in
-> units of four bytes. Usually twenty bytes total, but it can be longer. If you
-> assume twenty, then the moment someone sends a packet with a longer header,
-> you start parsing completely the wrong bytes. And an attacker can send exactly
-> that on purpose. So: multiply by four, step that far.
+> The IP header isn't a fixed size — `ihl` holds its length, in units of four
+> bytes. Usually twenty. Assume twenty, and the moment someone sends a longer
+> header you're parsing completely the wrong bytes — and an attacker can send
+> exactly that on purpose. So: multiply by four.
 
 [Point at the udphdr check.]
 
 > Prove there's room for the UDP header, and now I can see the ports.
 >
-> The thing to notice about this whole block: everything that isn't ours has
-> already passed straight through, untouched. This filter is invisible to the
-> rest of the machine.
+> The thing to notice: everything that isn't ours has already passed straight
+> through, untouched. This filter is invisible to the rest of the machine.
 
 ---
 
-## 5. Target filter — also already written (1 min)
+## 5. Target filter — also already written (0.5 min)
 
 [Point at the target lookup and comparison.]
 
@@ -247,22 +234,20 @@ attacker -target 10.10.0.2:9999 -mode legit
 [Point at the htons/htonl.]
 
 > These conversions matter more than they look. Numbers on the wire are
-> big-endian; this machine is little-endian. Forget them and the code compiles
-> fine, loads fine, and you get a filter that silently matches absolutely
-> nothing. That's the classic bug in this world — everything looks healthy and
-> your filter does nothing at all.
+> big-endian, this machine is little-endian. Forget them and it compiles, loads,
+> and silently matches nothing at all — the classic bug in this world.
+> Everything looks healthy; your filter does nothing.
 
 [Point at `inc_stat(0)`.]
 
-> And that's the first counter. Total. Meaning "a packet I'm responsible for."
+> And that's the first counter — total, meaning "a packet I'm responsible for."
 >
-> Right — that's the boring half. From here it's empty, and this is the part I
-> actually want to write in front of you. Three layers of defense, cheapest
-> first.
+> That's the boring half. From here it's empty, and this is the part I want to
+> write in front of you. Three layers, cheapest first.
 
 ---
 
-## 6. Layer 1: blocklist (2 min) ← start typing here
+## 6. Layer 1: blocklist (1.5 min) ← start typing here
 
 **Where:** inside `guard()`, directly below `inc_stat(0);` and above the
 placeholder that currently ends the function. Everything from here to §9 gets
@@ -390,7 +375,7 @@ attacker -target 10.10.0.2:9999 -mode flood
 
 ---
 
-## 8. The trap (3 min) ← this is the talk
+## 8. The trap (2.5 min) ← this is the talk
 
 [Point back at the `src` struct.]
 
